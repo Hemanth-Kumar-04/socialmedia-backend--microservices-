@@ -98,7 +98,6 @@ const loginUser = async (req, res) => {
   }
 };
 
-//refresh token
 const refreshTokenUser = async (req, res) => {
   logger.info("Refresh token endpoint hit...");
   try {
@@ -111,10 +110,8 @@ const refreshTokenUser = async (req, res) => {
       });
     }
 
+    // 1) Find the stored token document
     const storedToken = await RefreshToken.findOne({ token: refreshToken });
-
-    const storedToken = await RefreshToken.deleteOne({ token: refreshToken });
-    
     if (!storedToken) {
       logger.warn("Invalid refresh token provided");
       return res.status(400).json({
@@ -123,39 +120,49 @@ const refreshTokenUser = async (req, res) => {
       });
     }
 
-    if (!storedToken || storedToken.expiresAt < new Date()) {
-      logger.warn("Invalid or expired refresh token");
-
+    // 2) Check expiry
+    if (storedToken.expiresAt < new Date()) {
+      // Optional: clean up expired token
+      await RefreshToken.deleteOne({ _id: storedToken._id });
+      logger.warn("Expired refresh token");
       return res.status(401).json({
         success: false,
-        message: `Invalid or expired refresh token`,
+        message: "Expired refresh token",
       });
     }
 
+    // 3) Load the user
     const user = await User.findById(storedToken.user);
-
     if (!user) {
-      logger.warn("User not found");
-
+      logger.warn("User not found for this token");
       return res.status(401).json({
         success: false,
-        message: `User not found`,
+        message: "User not found",
       });
     }
 
+    // 4) Delete the old refresh token
+    await RefreshToken.deleteOne({ _id: storedToken._id });
+
+    // 5) Generate new tokens
     const { accessToken: newAccessToken, refreshToken: newRefreshToken } =
       await generateTokens(user);
 
-    //delete the old refresh token
-    await RefreshToken.deleteOne({ _id: storedToken._id });
+    // 6) Save the new refresh token
+    await RefreshToken.create({
+      user: user._id,
+      token: newRefreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL),
+    });
 
-    res.json({
+    logger.info("Issued new tokens");
+    return res.json({
       accessToken: newAccessToken,
       refreshToken: newRefreshToken,
     });
   } catch (e) {
-    logger.error("Refresh token error occured", e);
-    res.status(500).json({
+    logger.error("Refresh token error occurred", e);
+    return res.status(500).json({
       success: false,
       message: "Internal server error",
     });
